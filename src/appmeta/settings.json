@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "version": 1,
+  "fields": {
+    "word": {
+      "type": "string",
+      "label": "Secret word",
+      "description": "The same word on both bars links them. Latin letters and digits.",
+      "default": ""
+    },
+    "name": {
+      "type": "string",
+      "label": "My name",
+      "description": "Shown on the other bar. Latin letters, up to 8.",
+      "default": "ME",
+      "max_length": 8
+    }
+  }
+}

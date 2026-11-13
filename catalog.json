@@ -1,0 +1,6 @@
+{
+  "category": "social",
+  "short_description": "Send a heart or a short message from your BUSY Bar to a friend's.",
+  "description": "Pair two BUSY Bars and send each other little messages.\n\n## How to use\n\n- On both bars, set the same secret word in the app's settings, and your name.\n- Turn the wheel to pick a message: HEART, KISS, CALL ME, HOME, MISS YOU or WAVE.\n- Press **Start** to send it.\n\n## What you see\n\n- The other bar shows the message in pink, with the sender's name under it, for 10 seconds.\n- Its back display keeps who sent the last message and when.\n\nThe BUSY Bar runs one app at a time, so messages arrive only while this app is open. The bar checks for new ones every 10 seconds.\n\n## Privacy\n\nMessages go through the public server [ntfy.sh](https://ntfy.sh), on a channel named after your secret word. Anyone who knows the word can read and send messages, so pick one that is hard to guess. See ntfy.sh's [privacy policy](https://docs.ntfy.sh/privacy/).",
+  "changelog": "First release: six messages, pairing by a secret word, the last sender on the back display."
+}

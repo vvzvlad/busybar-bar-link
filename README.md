@@ -7,8 +7,8 @@ A JavaScript app for [BUSY Bar](https://busy.app). Work in progress.
 ## What it does
 
 - Two bars are paired by the same secret word in their settings.
-- Turn the wheel to pick a picture (heart, kiss, call me, coming home, miss you, wave) and press Start to send it.
-- The other bar plays an animation over its screen, with a sound and the status light, and its back display shows who sent it and when.
+- Turn the wheel to pick a pixel picture with its word (a heart, lips for a kiss, a phone for call me, a house for coming home, a sad face for miss you, a waving hand) and press Start to send it.
+- The other bar shows the picture moving for 10 seconds (the heart beats, the hand waves) with the sender's name, with a sound and the status light, and its back display shows who sent it and when.
 - The BUSY Bar runs one app at a time, so messages arrive only while this app is open.
 - Settings: the secret word and your name.
 

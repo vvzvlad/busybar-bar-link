@@ -1,5 +1,6 @@
 import { generateXpm2 } from "@busy-app/busy-lib";
 import { formatHM } from "@shared/datetime";
+import { device } from "@shared/device";
 import { createScreen, type Element } from "./screen";
 import { loadValues } from "./settings";
 import manifest from "./appmeta/manifest.json";
@@ -215,6 +216,8 @@ const POLL_MS = 10 * 1000;
 /** How long a message from the other bar stays on the front display, its picture moving on a frame every FRAME_MS. */
 const SHOW_MS = 10 * 1000;
 const FRAME_MS = 250;
+/** How long the picker stays on the front display after the last turn of the wheel or Start on the clock; then the clock is back. */
+const PICK_MS = 5 * 1000;
 /** The space between a picture and the text beside it. */
 const PICTURE_GAP = 3;
 /**
@@ -236,12 +239,25 @@ function smallWidth(text: string): number {
 const OWN_IDS = 20;
 /** The localStorage key of this bar's own post ids. */
 const OWN_KEY = "own_ids";
+/** The localStorage key of the last message received, Received as JSON: the back display shows it after a restart. */
+const LAST_KEY = "last";
 
 const WHITE = "#FFFFFFFF";
 const GRAY = "#A0A0A0FF";
 const PINK = "#FF4080FF";
 
-type Received = { msg: string; from: string; time: number };
+/** "No connection", 5x5, in the top right corner of the front while the last poll or post failed. */
+const NO_LINK = generateXpm2({ palette: { ".": "none", r: "#FF3030" }, grid: ["r...r", ".r.r.", "..r..", ".r.r.", "r...r"] });
+
+/** The colour at 40 % brightness, "#RRGGBBAA" in and out: the last message is drawn so while the bar has no connection. */
+function dim(color: string): string {
+  let out = "#";
+  for (let i = 1; i < 7; i += 2) out += Math.round(parseInt(color.slice(i, i + 2), 16) * 0.4).toString(16).padStart(2, "0");
+  return out + color.slice(7);
+}
+
+/** A message from the other bar; `id` is ntfy's, to know it again after a restart. */
+type Received = { msg: string; from: string; time: number; id: string };
 
 /** One line of ntfy's JSON stream. */
 type NtfyEvent = { id?: string; event?: string; time?: number; message?: string };
@@ -249,6 +265,11 @@ type NtfyEvent = { id?: string; event?: string; time?: number; message?: string 
 /** A line of text across the middle of the front display. */
 function single(text: string): Element[] {
   return [{ id: "main", type: "text", text, font: "bold", color: WHITE, x: 36, y: 8, align: "center" }];
+}
+
+/** The bar's local time, large, across the middle of the front display. */
+function clock(): Element[] {
+  return [{ id: "clock", type: "text", text: formatHM(new Date()), font: "extra_large", color: WHITE, x: 36, y: 8, align: "center" }];
 }
 
 /**
@@ -288,10 +309,13 @@ function incoming(r: Received): Element[] {
   ];
 }
 
-/** The back display, without the status bar's 12 px on the right: who sent the last message and when. */
-function back(last: Received | null): Element {
+/**
+ * The back display, without the status bar's 12 px on the right: who sent the last message and when; dimmed when
+ * `offline`.
+ */
+function back(last: Received | null, offline: boolean): Element {
   const text = last ? `From ${last.from} ${formatHM(new Date(last.time * 1000))}` : "From --";
-  return { id: "last", type: "text", text, font: "normal", color: WHITE, x: 74, y: 40, align: "center", display: "back" };
+  return { id: "last", type: "text", text, font: "normal", color: offline ? dim(WHITE) : WHITE, x: 74, y: 40, align: "center", display: "back" };
 }
 
 /**
@@ -314,9 +338,17 @@ function main(): void {
   } catch (err) {
     report(err);
   }
-  /** The message on the front display now, and the last one received, for the back display. */
+  /** The message on the front display now, and the last one received, for the back display, kept across launches. */
   let showing: Received | null = null;
   let last: Received | null = null;
+  try {
+    const kept: unknown = JSON.parse(localStorage.getItem(LAST_KEY) ?? "null");
+    if (kept !== null) last = kept as Received;
+  } catch (err) {
+    report(err);
+  }
+  /** The last poll or post failed: the front shows the no-connection picture, the back the last message dimmed. */
+  let offline = false;
   /**
    * One request at a time: a poll that starts while a post is unanswered could return the post before its id is
    * known, and show this bar's own message as the other's. A Start meanwhile waits for the poll to end.
@@ -327,19 +359,42 @@ function main(): void {
   let showTimer: ReturnType<typeof setTimeout> | undefined;
   /** Moves the picture of the message shown on a frame; runs only while a message with a picture is shown. */
   let frameTimer: ReturnType<typeof setInterval> | undefined;
+  /** Runs while the picker is up: from the last turn of the wheel, or Start on the clock, until the clock is back. */
+  let pickTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Redraws on every new minute, for the clock. */
+  let minuteTimer: ReturnType<typeof setTimeout> | undefined;
   let step = 0;
   let stopped = false;
 
-  function draw(): void {
+  /**
+   * The front display: a message received, else the picker while the wheel turns, else the clock. With `led`
+   * ("#RRGGBBAA") the status LED blinks.
+   */
+  function draw(led?: string): void {
     if (stopped || word === null) return;
     if (word === "") {
       screen.draw(single("SET WORD"));
-    } else if (showing) {
-      const picture = pictureOf(showing.msg);
-      screen.draw([...(picture ? card(picture, step, ["from", showing.from], GRAY) : incoming(showing)), back(last)]);
-    } else {
-      screen.draw([...card(MESSAGES[pick].picture, 0, [MESSAGES[pick].word], WHITE), back(last)]);
+      return;
     }
+    let front: Element[];
+    if (showing) {
+      const picture = pictureOf(showing.msg);
+      front = picture ? card(picture, step, ["from", showing.from], GRAY) : incoming(showing);
+    } else if (pickTimer !== undefined) {
+      front = card(MESSAGES[pick].picture, 0, [MESSAGES[pick].word], WHITE);
+    } else {
+      front = clock();
+    }
+    if (offline) front.push({ id: "nolink", type: "xpmbitmap", data: NO_LINK, x: 67, y: 0, align: "top_left" });
+    screen.draw([...front, back(last, offline)], led);
+  }
+
+  /** Redraws just after every minute turns, for the clock. */
+  function tick(): void {
+    minuteTimer = setTimeout(() => {
+      draw();
+      tick();
+    }, 60000 - (Date.now() % 60000) + 20);
   }
 
   function stopFrames(): void {
@@ -347,10 +402,18 @@ function main(): void {
     frameTimer = undefined;
   }
 
+  /** Shows a message from the other bar with a sound and a blink of the LED, and keeps it for the back display. */
   function show(r: Received): void {
     showing = r;
     last = r;
     step = 0;
+    // Every message received is new to the store: written each time, nothing to compare.
+    try {
+      localStorage.setItem(LAST_KEY, JSON.stringify(r));
+    } catch (err) {
+      report(err);
+    }
+    void device.AudioPlay({ application_name: APP, path: "sounds/message.snd" }).catch(report);
     if (showTimer !== undefined) clearTimeout(showTimer);
     stopFrames();
     if (pictureOf(r.msg)) {
@@ -365,7 +428,7 @@ function main(): void {
       showing = null;
       draw();
     }, SHOW_MS);
-    draw();
+    draw(PINK);
   }
 
   /** Reads ntfy's answer to a poll: every message moves `since` on; the newest one not posted here is shown. */
@@ -379,8 +442,13 @@ function main(): void {
         if (event.event !== "message" || typeof event.id !== "string") continue;
         since = event.id;
         if (own.includes(event.id)) continue;
+        // The first poll looks 10 minutes back: the message shown before a restart, and every older one, were seen.
+        if (last !== null && event.id === last.id) {
+          newest = null;
+          continue;
+        }
         const body = JSON.parse(event.message ?? "") as { from?: unknown; msg?: unknown };
-        newest = { msg: String(body.msg), from: String(body.from), time: event.time ?? Math.floor(Date.now() / 1000) };
+        newest = { msg: String(body.msg), from: String(body.from), time: event.time ?? Math.floor(Date.now() / 1000), id: event.id };
       } catch (err) {
         report(err);
       }
@@ -388,25 +456,41 @@ function main(): void {
     if (newest) show(newest);
   }
 
-  /** Runs one request; a Start that waited for it is sent after it. */
+  /**
+   * Runs one request; a failed one shows the bar offline until one goes through. A Start that waited for it is sent
+   * after it.
+   */
   function request(work: Promise<void>): void {
     busy = true;
-    void work.catch(report).then(() => {
-      busy = false;
-      // A message queued before Back is still sent: the post keeps the app alive until it ends.
-      if (queued !== null) {
-        const msg = queued;
-        queued = null;
-        send(msg);
-      }
-    });
+    let failed = false;
+    void work
+      .catch((err) => {
+        failed = true;
+        report(err);
+      })
+      .then(() => {
+        if (failed !== offline) {
+          offline = failed;
+          draw();
+        }
+        busy = false;
+        // A message queued before Back is still sent: the post keeps the app alive until it ends.
+        if (queued !== null) {
+          const msg = queued;
+          queued = null;
+          send(msg);
+        }
+      });
   }
 
   function poll(): void {
     if (busy || stopped) return;
     request(
       fetch(`${TOPIC_URL}${word}/json?poll=1&since=${since}`)
-        .then((res) => res.text())
+        .then((res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status} from ntfy.sh`);
+          return res.text();
+        })
         .then(received),
     );
   }
@@ -418,7 +502,10 @@ function main(): void {
     }
     request(
       fetch(`${TOPIC_URL}${word}`, { method: "POST", body: JSON.stringify({ from: name, msg }) })
-        .then((res) => res.json())
+        .then((res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status} from ntfy.sh`);
+          return res.json();
+        })
         .then((posted: { id?: unknown }) => {
           if (typeof posted.id !== "string") return;
           own.push(posted.id);
@@ -428,19 +515,32 @@ function main(): void {
     );
   }
 
+  /** Puts the picker on the front display, or keeps it there, until PICK_MS from now; then the clock is back. */
+  function openPicker(): void {
+    if (pickTimer !== undefined) clearTimeout(pickTimer);
+    pickTimer = setTimeout(() => {
+      pickTimer = undefined;
+      draw();
+    }, PICK_MS);
+    draw();
+  }
+
   // The listener keeps the app alive; a long Back is handled by the firmware and quits it.
   const unbind = listen("input", (event) => {
     if (stopped) return;
     if (event.key === "encoder") {
       if (!word) return;
       pick = (pick + event.delta + MESSAGES.length) % MESSAGES.length;
-      draw();
+      openPicker();
     } else if (event.action !== "short") {
       return;
     } else if (event.key === "back") {
       quit();
     } else if (event.key === "start" && word) {
-      send(MESSAGES[pick].word);
+      // Start sends a picture only while the picker shows it; on the clock it brings the picker up instead, as a turn
+      // of the wheel does, and sends nothing. Over a message received the picker is not on the display either.
+      if (pickTimer !== undefined && showing === null) send(MESSAGES[pick].word);
+      else openPicker();
     }
   });
 
@@ -449,6 +549,8 @@ function main(): void {
     stopped = true;
     if (pollTimer !== undefined) clearInterval(pollTimer);
     if (showTimer !== undefined) clearTimeout(showTimer);
+    if (pickTimer !== undefined) clearTimeout(pickTimer);
+    if (minuteTimer !== undefined) clearTimeout(minuteTimer);
     stopFrames();
     // Not detached from inside the handler itself: the unbind would stop the app while this handler still runs.
     setTimeout(unbind, 0);
@@ -460,6 +562,7 @@ function main(): void {
       if (typeof values?.name === "string") name = values.name;
       draw();
       if (word === "" || stopped) return;
+      tick();
       poll();
       pollTimer = setInterval(poll, POLL_MS);
     })
